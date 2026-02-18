@@ -1,4 +1,4 @@
-# table_section_editor.py
+# experience_edit.py
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from copy import deepcopy
@@ -6,22 +6,19 @@ from copy import deepcopy
 
 class ExperienceEditor:
     def __init__(self, resume_path: str):
+        self.resume_path = resume_path
         self.doc = Document(resume_path)
 
-    # ---------- basic helpers ----------
-    def _body_children(self):
-        return list(self.doc._body._element)
+    # --------------------------
+    # Table header helpers
+    # --------------------------
+    def _cell_text(self, cell) -> str:
+        return " ".join(p.text.strip() for p in cell.paragraphs if p.text.strip()).strip()
 
-    def _paragraph_from_elem(self, elem):
-        for p in self.doc.paragraphs:
-            if p._p is elem:
-                return p
-        return None
-
-    def _delete_paragraph(self, paragraph):
-        el = paragraph._element
-        el.getparent().remove(el)
-        paragraph._p = paragraph._element = None
+    def get_table_header(self, table_index: int) -> dict:
+        tbl = self.doc.tables[table_index]
+        row = tbl.rows[0]
+        return {"left": self._cell_text(row.cells[0]), "right": self._cell_text(row.cells[1])}
 
     def _copy_run_style(self, src_run, dst_run):
         dst_run.bold = src_run.bold
@@ -32,47 +29,17 @@ class ExperienceEditor:
         if src_run.font.color and src_run.font.color.rgb:
             dst_run.font.color.rgb = src_run.font.color.rgb
 
-    def _set_para_spacing(self, p, space_before=None, space_after=None):
-        pf = p.paragraph_format
-        if space_before is not None:
-            pf.space_before = space_before
-        if space_after is not None:
-            pf.space_after = space_after
-
-    # ---------- table location ----------
-    def _find_table_pos(self, table_index: int) -> int:
-        tbl_elem = self.doc.tables[table_index]._tbl
-        children = self._body_children()
-        for i, child in enumerate(children):
-            if child is tbl_elem:
-                return i
-        raise ValueError("Table not found in document body.")
-
-    def _find_next_table_elem(self, table_index: int):
-        children = self._body_children()
-        pos = self._find_table_pos(table_index)
-        for child in children[pos + 1:]:
-            if child.tag.endswith("}tbl"):
-                return child
-        return None
-
-    # ---------- header read/update ----------
-    def get_table_header(self, table_index: int) -> dict:
-        tbl = self.doc.tables[table_index]
-        row = tbl.rows[0]
-        left = " ".join(p.text.strip() for p in row.cells[0].paragraphs if p.text.strip()).strip()
-        right = " ".join(p.text.strip() for p in row.cells[1].paragraphs if p.text.strip()).strip()
-        return {"left": left, "right": right}
-
     def _set_cell_text_preserve_style(self, cell, new_text: str, align_right: bool = False):
         new_text = new_text.strip()
         p = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
         src_run = p.runs[0] if p.runs else None
 
+        # clear all runs
         for para in cell.paragraphs:
             for r in para.runs:
                 r.text = ""
 
+        # write text in first run
         if p.runs:
             r0 = p.runs[0]
             r0.text = new_text
@@ -90,28 +57,81 @@ class ExperienceEditor:
         self._set_cell_text_preserve_style(row.cells[0], left_text, align_right=False)
         self._set_cell_text_preserve_style(row.cells[1], right_text, align_right=True)
 
-    # ---------- bullet detection ----------
+    # --------------------------
+    # Body helpers
+    # --------------------------
+    def _body_children(self):
+        return list(self.doc._body._element)
+
+    def _paragraph_from_elem(self, elem):
+        for p in self.doc.paragraphs:
+            if p._p is elem:
+                return p
+        return None
+
+    def _delete_paragraph(self, paragraph):
+        el = paragraph._element
+        el.getparent().remove(el)
+        paragraph._p = paragraph._element = None
+
+    def _find_table_pos(self, table_index: int) -> int:
+        tbl_elem = self.doc.tables[table_index]._tbl
+        children = self._body_children()
+        for i, child in enumerate(children):
+            if child is tbl_elem:
+                return i
+        raise ValueError("Table not found in document body.")
+
+    def _find_next_table_elem(self, table_index: int):
+        children = self._body_children()
+        pos = self._find_table_pos(table_index)
+        for child in children[pos + 1:]:
+            if child.tag.endswith("}tbl"):
+                return child
+        return None
+
+    # --------------------------
+    # Paragraph format helpers
+    # --------------------------
     def _is_bullet_paragraph(self, p) -> bool:
-        if p._p.pPr is not None and p._p.pPr.numPr is not None:
+        # true numbering/bullets in XML
+        if p._p is not None and p._p.pPr is not None and p._p.pPr.numPr is not None:
             return True
+
+        # style heuristics
         try:
             style_name = (p.style.name or "").lower()
         except Exception:
             style_name = ""
         if "list" in style_name or "bullet" in style_name:
             return True
+
+        # literal bullet char
         return (p.text or "").lstrip().startswith("•")
 
+    def _set_para_spacing(self, p, space_before=None, space_after=None):
+        pf = p.paragraph_format
+        if space_before is not None:
+            pf.space_before = space_before
+        if space_after is not None:
+            pf.space_after = space_after
+
+    # --------------------------
+    # Spacer / gap control
+    # --------------------------
     def _remove_leading_empty_paragraphs_after_table(self, table_index: int, max_remove: int = 50):
+        """
+        Removes empty paragraphs directly after table header so there is no blank gap before first bullet.
+        """
         children = self._body_children()
         pos = self._find_table_pos(table_index)
-
         removed = 0
+
         for child in children[pos + 1:]:
             if removed >= max_remove:
                 break
             if child.tag.endswith("}tbl"):
-                break
+                break  # next entry
             if not child.tag.endswith("}p"):
                 continue
 
@@ -124,11 +144,15 @@ class ExperienceEditor:
                 removed += 1
                 continue
 
-            break
+            break  # first real content reached
 
     def _remove_all_empty_paragraphs_before_elem(self, elem, max_remove: int = 50):
+        """
+        Removes ALL empty paragraphs right before a given element.
+        """
         if elem is None:
             return
+
         removed = 0
         prev = elem.getprevious()
         while prev is not None and removed < max_remove:
@@ -143,25 +167,32 @@ class ExperienceEditor:
             break
 
     def _snapshot_spacer_before_elem(self, elem):
+        """
+        Grab an existing blank paragraph style (if present) so spacing/font is consistent.
+        """
         if elem is None:
             return None
         prev = elem.getprevious()
         while prev is not None and prev.tag.endswith("}p"):
             p_obj = self._paragraph_from_elem(prev)
             if p_obj is not None and (p_obj.text or "").strip() == "":
-                style = p_obj.style
                 ppr = deepcopy(p_obj._p.pPr) if (p_obj._p is not None and p_obj._p.pPr is not None) else None
                 run0 = p_obj.runs[0] if p_obj.runs else None
-                return {"style": style, "ppr": ppr, "run0": run0}
+                return {"style": p_obj.style, "ppr": ppr, "run0": run0}
             break
         return None
 
-    def _insert_one_spacer_before_elem(self, elem, spacer_tpl, fallback_run_src=None):
+    def _insert_one_clean_spacer_before_elem(self, elem, spacer_tpl, fallback_run_src=None):
+        """
+        Inserts exactly ONE blank line before elem with zero spacing so it doesn't become 2 lines.
+        """
         if elem is None:
             return
+
         new_p = self.doc.add_paragraph("")
         elem.addprevious(new_p._p)
 
+        # apply style/ppr if available (but remove numPr if any)
         if spacer_tpl and spacer_tpl.get("style") is not None:
             new_p.style = spacer_tpl["style"]
 
@@ -172,18 +203,26 @@ class ExperienceEditor:
             if new_p._p.pPr is not None and new_p._p.pPr.numPr is not None:
                 new_p._p.pPr.remove(new_p._p.pPr.numPr)
 
+        # force spacer spacing to zero
+        new_p.paragraph_format.space_before = 0
+        new_p.paragraph_format.space_after = 0
+
         r = new_p.add_run("")
         if spacer_tpl and spacer_tpl.get("run0") is not None:
             self._copy_run_style(spacer_tpl["run0"], r)
         elif fallback_run_src is not None:
             self._copy_run_style(fallback_run_src, r)
 
+    # --------------------------
+    # Bullets: read / edit / replace
+    # --------------------------
     def get_bullets_after_table(self, table_index: int) -> list:
         children = self._body_children()
         pos = self._find_table_pos(table_index)
 
         bullets = []
         started = False
+
         for child in children[pos + 1:]:
             if child.tag.endswith("}tbl"):
                 break
@@ -204,15 +243,39 @@ class ExperienceEditor:
             else:
                 if started:
                     break
+
         return bullets
 
     def list_bullet_texts(self, table_index: int) -> list[str]:
         return [(p.text or "").strip() for p in self.get_bullets_after_table(table_index)]
 
-    def replace_all_bullets_scoped(self, table_index: int, new_bullets: list[str], next_table_override: int | None = None, keep_one_blank_line_before_next: bool = True):
+    def edit_bullet(self, table_index: int, bullet_index: int, new_text: str):
+        bullets = self.get_bullets_after_table(table_index)
+        if bullet_index < 0 or bullet_index >= len(bullets):
+            raise ValueError("Invalid bullet index.")
+        p = bullets[bullet_index]
+
+        # replace text in runs safely without touching bullet formatting
+        if p.runs:
+            p.runs[0].text = new_text
+            for r in p.runs[1:]:
+                r.text = ""
+        else:
+            p.add_run(new_text)
+
+        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+
+    def replace_all_bullets_scoped(
+        self,
+        table_index: int,
+        new_bullets: list[str],
+        next_table_override: int | None = None,
+        keep_one_blank_line_before_next: bool = True
+    ):
         """
-        Same as replace_all_bullets(), but anchors insertion to the next table INSIDE the same section list.
-        - next_table_override = the next table index in the same section (experience or projects)
+        Replace bullet list under table_index.
+        If next_table_override is provided, new bullets are inserted BEFORE that table
+        (scoped to the next entry within a section list: experience or projects).
         """
         bullets = self.get_bullets_after_table(table_index)
         if not bullets:
@@ -225,13 +288,14 @@ class ExperienceEditor:
         template_p = bullets[0]
         template_run = template_p.runs[0] if template_p.runs else None
 
+        # ensure we can preserve bullet formatting
         if template_p._p is None or template_p._p.pPr is None:
             raise ValueError("Template bullet paragraph has no pPr; cannot preserve bullet formatting.")
 
         template_ppr = deepcopy(template_p._p.pPr)
         template_style = template_p.style
 
-        # ✅ Anchor: next table inside same section (if provided), else next table in doc
+        # anchor
         if next_table_override is not None:
             next_tbl_elem = self.doc.tables[next_table_override]._tbl
         else:
@@ -243,17 +307,19 @@ class ExperienceEditor:
         for p in reversed(bullets):
             self._delete_paragraph(p)
 
-        # remove leading empty paragraphs after table to remove gap
+        # remove gap before bullets
         self._remove_leading_empty_paragraphs_after_table(table_index)
 
-        # insert bullets in NORMAL order
+        # insert new bullets in NORMAL order
         if next_tbl_elem is not None:
             for b in new_bullets:
                 new_p = self.doc.add_paragraph("")
                 next_tbl_elem.addprevious(new_p._p)
 
+                # ensure pPr exists before removal/reinsert
                 if new_p._p.pPr is not None:
                     new_p._p.remove(new_p._p.pPr)
+
                 new_p._p.insert(0, deepcopy(template_ppr))
                 new_p.style = template_style
                 new_p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
@@ -262,16 +328,50 @@ class ExperienceEditor:
                 if template_run:
                     self._copy_run_style(template_run, r0)
 
-            # remove space before first bullet
+                # prevent bullet paragraphs from adding extra space
+                self._set_para_spacing(new_p, space_before=0)
+
+            # remove space before first bullet + ensure justify
             new_block = self.get_bullets_after_table(table_index)
             if new_block:
                 self._set_para_spacing(new_block[0], space_before=0)
                 new_block[0].alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
-            # keep exactly one blank line before next header
+                # ✅ key fix: prevent 2-line gap before next header
+                self._set_para_spacing(new_block[-1], space_after=0)
+
+            # enforce exactly ONE blank line before next header table
             self._remove_all_empty_paragraphs_before_elem(next_tbl_elem, max_remove=50)
             if keep_one_blank_line_before_next:
-                self._insert_one_spacer_before_elem(next_tbl_elem, spacer_tpl, fallback_run_src=template_run)
+                self._insert_one_clean_spacer_before_elem(next_tbl_elem, spacer_tpl, fallback_run_src=template_run)
+            else:
+                # user wants NO extra blank line
+                self._remove_all_empty_paragraphs_before_elem(next_tbl_elem, max_remove=50)
+
+        else:
+            # append to end (last entry)
+            body = self.doc._body._element
+            for b in new_bullets:
+                new_p = self.doc.add_paragraph("")
+                body.append(new_p._p)
+
+                if new_p._p.pPr is not None:
+                    new_p._p.remove(new_p._p.pPr)
+
+                new_p._p.insert(0, deepcopy(template_ppr))
+                new_p.style = template_style
+                new_p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+
+                r0 = new_p.add_run(b)
+                if template_run:
+                    self._copy_run_style(template_run, r0)
+
+                self._set_para_spacing(new_p, space_before=0)
+
+            new_block = self.get_bullets_after_table(table_index)
+            if new_block:
+                self._set_para_spacing(new_block[0], space_before=0)
+                self._set_para_spacing(new_block[-1], space_after=0)
 
     def save(self, output_path: str):
         self.doc.save(output_path)

@@ -1,16 +1,18 @@
 # editing.py
 from pathlib import Path
+import re
 from education_table_edit import EducationTableEditor
 from summary_section_edit import SummaryEditor
 from header_edit_class import HeaderEditor
 from skills_edit import SkillsEditor
 from experience_edit import ExperienceEditor
-import re
 
 def sanitize_bullet_text(s: str) -> str:
     s = s.strip()
-    # remove leading bullet chars like "•", "-", "*"
+    # remove leading bullet chars like "•", "-", "*", "·"
     s = re.sub(r"^[\u2022\-\*\u00B7]+\s*", "", s)  # • - * ·
+    # also remove accidental multiple leading bullets/spaces like "•    •    text"
+    s = re.sub(r"^(?:[\u2022\-\*\u00B7]\s*)+", "", s)
     return s.strip()
 
 
@@ -36,29 +38,39 @@ def paste_bullets_done() -> list[str]:
     Paste bullets where each bullet can span multiple lines.
     Blank line = next bullet.
     Type DONE on a new line to finish.
+    Also removes any user-typed bullet characters (•, -, *) automatically.
     """
     print("\nPaste new bullets (you can include blank lines).")
     print("Type DONE on a new line to finish:\n")
 
-    bullets = []
-    current = []
+    bullets: list[str] = []
+    current: list[str] = []
+
+    def flush_current():
+        nonlocal current, bullets
+        if not current:
+            return
+        text = " ".join(" ".join(current).split()).strip()
+        text = sanitize_bullet_text(text)  # ✅ APPLY SANITIZER HERE
+        if text:
+            bullets.append(text)
+        current = []
 
     while True:
         line = input()
+
         if line.strip() == "DONE":
-            if current:
-                bullets.append(" ".join(" ".join(current).split()).strip())
+            flush_current()
             break
 
+        # blank line => new bullet
         if line.strip() == "":
-            if current:
-                bullets.append(" ".join(" ".join(current).split()).strip())
-                current = []
+            flush_current()
             continue
 
         current.append(line)
 
-    return [b for b in bullets if b.strip()]
+    return bullets
 
 
 def edit_table_section_scoped(
@@ -109,18 +121,21 @@ def edit_table_section_scoped(
     if mode == "1":
         idx = int(input("Which bullet index? ").strip())
         new_text = input("New bullet text: ").strip()
+        new_text = sanitize_bullet_text(new_text)  # ✅ also sanitize here
         editor.edit_bullet(table_index, idx, new_text)
 
     elif mode == "2":
         new_bullets = paste_bullets_done()
 
-        # ✅ scoped replacement: anchor to next table within this section only
+        sp = input("\nDo you want ONE blank line before the next header? (Y/N) [Y]: ").strip().lower()
+        keep_space = True if sp == "" or sp == "y" else False
+
         editor.replace_all_bullets_scoped(
             table_index,
             new_bullets,
             next_table_override=next_table_override,
-            keep_one_blank_line_before_next=True
-        )
+            keep_one_blank_line_before_next=keep_space
+)
 
         updated = editor.list_bullet_texts(table_index)
         print(f"\n=== Updated Bullets (from DOC) [{len(updated)}] ===")
